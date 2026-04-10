@@ -1,87 +1,116 @@
-import Groq from "groq-sdk"
+import "server-only";
 
-const groq=new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-})
+import { getGeminiClient, uploadGeminiPdf } from "@/lib/ai/gemini";
+import { buildQualityReport } from "@/lib/analysis/report";
+import { clamp } from "@/lib/utils";
+
+type GradeResult = {
+  score: number;
+  aiProbability: number;
+  strengths: string[];
+  weaknesses: string[];
+};
+
+function heuristicGrade(text: string, topic: string, rubric: string, difficulty: string) {
+  const quality = buildQualityReport(text);
+  const topicMentions = topic
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((part) => part.length > 3)
+    .filter((part) => text.toLowerCase().includes(part)).length;
+  const rubricMentions = rubric
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((part) => part.length > 5)
+    .filter((part) => text.toLowerCase().includes(part)).length;
+
+  let baseScore = quality.qualityScore + topicMentions * 3 + Math.min(rubricMentions, 4) * 2;
+  if (difficulty === "Easy") baseScore += 4;
+  if (difficulty === "Hard") baseScore -= 4;
+
+  const score = clamp(baseScore, 45, 96);
+  const repetitivePhrases = (text.match(/\b(\w+)\b(?:\s+\1\b){2,}/gi) ?? []).length;
+  const aiProbability = clamp(18 + repetitivePhrases * 8 + (text.length > 8000 ? 8 : 0), 8, 82);
+
+  return {
+    score: Math.round(score),
+    aiProbability,
+    strengths: [
+      quality.strengths[0],
+      topicMentions > 1 ? "The report addresses core assignment concepts directly." : "The submission aligns with the assignment at a high level.",
+    ],
+    weaknesses: [
+      quality.risks[0],
+      rubricMentions < 2 ? "Rubric expectations are not covered consistently." : "Some rubric areas still need stronger evidence.",
+    ],
+  } satisfies GradeResult;
+}
+
+function parseGeminiJson(content: string) {
+  const jsonStart = content.indexOf("{");
+  const jsonEnd = content.lastIndexOf("}");
+
+  if (jsonStart === -1 || jsonEnd === -1) {
+    throw new Error("Gemini response did not contain JSON.");
+  }
+
+  return JSON.parse(content.slice(jsonStart, jsonEnd + 1)) as GradeResult;
+}
 
 export async function gradeAssignment(
   text: string,
   topic: string,
   rubric: string,
-  difficulty: string
+  difficulty: string,
+  absoluteFilePath?: string,
+  reportName?: string,
 ) {
+  const trimmedText = text.slice(0, 12000);
+  const ai = getGeminiClient();
 
-  const trimmedText = text.slice(0,12000); // limit to 12k chars
+  if (!ai) {
+    return heuristicGrade(trimmedText, topic, rubric, difficulty);
+  }
+
   const prompt = `
-You are an experienced university professor grading a student assignment.
+You are an experienced university professor grading a software-engineering project submission.
+Assignment Topic: ${topic}
+Difficulty Level: ${difficulty}
+Rubric: ${rubric}
+Submission Text: ${trimmedText}
 
-The assignment may belong to ANY academic field (engineering, science, humanities, business, etc.).
-
-Your job is to evaluate the submission fairly using the rubric provided.
-
-Assignment Topic:
-${topic}
-
-Difficulty Level:
-${difficulty}
-
-Grading Rubric:
-${rubric}
-
-Student Submission:
-${trimmedText}
-
-Grading Guidelines:
-
-. Bad assignments typically score below 40-60
-• Average assignments typically score between 65–80
-• Good assignments score between 85-95
-• Excellent assignments score between 95–100
-• Only extremely poor submissions should score below 60
-
-if difficulty is "Easy", be more lenient and generous with scoring.
-if difficulty is "Hard", be more strict and critical with scoring.  
-if difficulty is "Medium", use normal grading standards.
-
-Evaluation Instructions:
-
-1. Analyze the submission carefully
-2. Compare it against the rubric
-3. Identify strengths and weaknesses
-4. Estimate whether the writing appears AI-generated
-5. Provide a fair academic score
-
-Return ONLY valid JSON in this exact format:
-
+Return only valid JSON:
 {
   "score": number,
   "aiProbability": number,
-  "strengths": ["point1","point2"],
-  "weaknesses": ["point1","point2"]
+  "strengths": ["point1", "point2"],
+  "weaknesses": ["point1", "point2"]
 }
-
-Rules:
-- score must be between 0 and 100
-- aiProbability must be between 0 and 100
-- strengths must contain 2–4 items
-- weaknesses must contain 2–4 items
-- DO NOT include explanations outside JSON
 `;
 
-  const response = await groq.chat.completions.create({
-    model: "llama-3.3-70b-versatile",
-    temperature: 0.2,
-    messages: [
-      {
-        role: "system",
-        content: "You are an academic assignment grading AI."
-      },
-      {
-        role: "user",
-        content: prompt
-      }
-    ]
-  });
+  try {
+    const upload = absoluteFilePath && reportName
+      ? await uploadGeminiPdf(absoluteFilePath, reportName)
+      : null;
 
-  return response.choices[0].message.content;
+    const response = await (upload?.ai ?? ai).models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: upload ? [prompt, upload.filePart] : [prompt],
+      config: {
+        systemInstruction: "You are an academic grading assistant. Return JSON only.",
+        temperature: 0.2,
+      },
+    });
+
+    const parsed = parseGeminiJson(response.text ?? "");
+
+    return {
+      score: clamp(parsed.score, 0, 100),
+      aiProbability: clamp(parsed.aiProbability, 0, 100),
+      strengths: parsed.strengths.slice(0, 4),
+      weaknesses: parsed.weaknesses.slice(0, 4),
+    };
+  } catch {
+    return heuristicGrade(trimmedText, topic, rubric, difficulty);
+  }
 }

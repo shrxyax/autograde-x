@@ -9,58 +9,72 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
-  id        String   @id @default(uuid())
-  name      String
-  email     String   @unique
-  password  String
-  role      String
-  createdAt DateTime @default(now())
+  id                  String       @id @default(uuid())
+  name                String
+  email               String       @unique
+  password            String
+  role                String
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  assignmentsCreated  Assignment[] @relation("AssignmentAuthor")
+  submissions         Submission[] @relation("SubmissionAuthor")
+  submissionsReviewed Submission[] @relation("SubmissionReviewer")
 
-  submissions Submission[]
+  @@index([role])
 }
 
 model Assignment {
-  id          String   @id @default(uuid())
+  id          String       @id @default(uuid())
   title       String
   description String
-
   topic       String
+  deadline    DateTime
   difficulty  String
   rubric      String
-  maxScore    Int      @default(100)
-
-  createdAt   DateTime @default(now())
-
+  maxScore    Int          @default(100)
+  status      String       @default("DRAFT")
+  createdById String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  createdBy   User         @relation("AssignmentAuthor", fields: [createdById], references: [id])
   submissions Submission[]
+
+  @@index([createdById])
+  @@index([status, deadline])
 }
 
 model Submission {
-  id           String   @id @default(uuid())
-  userId       String
-  assignmentId String
+  id              String     @id @default(uuid())
+  assignmentId    String
+  userId          String
+  reviewedById    String?
+  version         Int
+  repositoryUrl   String?
+  reportName      String
+  reportPath      String
+  extractedText   String
+  qualityScore    Int
+  plagiarismScore Int
+  aiScore         Int
+  aiProbability   Int
+  aiFeedback      String
+  staticReport    String
+  finalScore      Int?
+  finalFeedback   String?
+  status          String     @default("SUBMITTED")
+  reviewedAt      DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  assignment      Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  user            User       @relation("SubmissionAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy      User?      @relation("SubmissionReviewer", fields: [reviewedById], references: [id])
 
-  fileUrl      String
-  fileName     String
-  status       String   @default("PENDING")
-
-  aiScore      Int?
-  aiFeedback   String?
-  aiProbability Int?
-
-  facultyScore     Int?
-  facultyFeedback  String?
-
-  grade         Int?
-
-  createdAt    DateTime @default(now())
-
-  user         User       @relation(fields: [userId], references: [id])
-  assignment   Assignment @relation(fields: [assignmentId], references: [id])
-
-  @@unique([userId, assignmentId])
+  @@unique([assignmentId, userId, version])
+  @@index([assignmentId, userId, createdAt])
+  @@index([status, plagiarismScore])
 }

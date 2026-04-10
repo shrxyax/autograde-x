@@ -1,113 +1,61 @@
-"use client";
+import { requireRole } from "@/lib/auth/session";
+import { getStudentDashboardData } from "@/lib/dashboard/queries";
+import { formatDate } from "@/lib/utils";
+import { SubmissionForm } from "@/components/dashboard/submission-form";
+import { EmptyState } from "@/components/shared/empty-state";
+import { roles } from "@/lib/domain";
 
-import { useEffect, useState } from "react";
-
-interface Assignment {
-  id: string;
-  title: string;
-  description: string;
-}
-
-export default function StudentAssignmentsPage() {
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [fileMap, setFileMap] = useState<Record<string, File | null>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [loadingId, setLoadingId] = useState<string | null>(null);
-
-  async function fetchAssignments() {
-    const res = await fetch("/api/assignments");
-    const data = await res.json();
-    setAssignments(data);
-  }
-
-  async function handleSubmit(assignmentId: string) {
-    setError(null);
-    setSuccess(null);
-
-    const file = fileMap[assignmentId];
-
-    if (!file) {
-      setError("Please select a PDF file.");
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("assignmentId", assignmentId);
-
-    try {
-      setLoadingId(assignmentId);
-
-     const res = await fetch("/api/submissions", {
-  method: "POST",
-  body: formData,
-  credentials: "include",
-});
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || "Upload failed.");
-        return;
-      }
-
-      setSuccess("Uploaded successfully!");
-      setFileMap((prev) => ({ ...prev, [assignmentId]: null }));
-
-    } catch (err) {
-      setError("Something went wrong.");
-    } finally {
-      setLoadingId(null);
-    }
-  }
-
-  useEffect(() => {
-    fetchAssignments();
-  }, []);
+export default async function StudentAssignmentsPage() {
+  const user = await requireRole([roles.STUDENT]);
+  const data = await getStudentDashboardData(user.id);
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Available Assignments</h1>
+    <div className="space-y-6">
+      <section className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
+        <h1 className="text-3xl font-semibold text-slate-950">Assignments</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Upload a PDF report and optional repository link for each project.
+        </p>
+      </section>
 
-      {error && (
-        <div className="bg-red-500 text-white p-3 rounded mb-4">
-          {error}
+      {data.assignments.length === 0 ? (
+        <EmptyState title="No assignments published" description="Faculty has not opened submissions yet." />
+      ) : (
+        <div className="space-y-6">
+          {data.assignments.map((assignment) => {
+            const existing = data.submissions.find((submission) => submission.assignmentId === assignment.id);
+
+            return (
+              <article key={assignment.id} className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
+                <div className="flex flex-col gap-4 lg:flex-row lg:justify-between">
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <h2 className="text-2xl font-semibold text-slate-950">{assignment.title}</h2>
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                        {assignment.difficulty}
+                      </span>
+                    </div>
+                    <p className="text-sm leading-7 text-slate-600">{assignment.description}</p>
+                    <p className="text-sm text-slate-500">Deadline: {formatDate(assignment.deadline)} · Max score: {assignment.maxScore}</p>
+                    <div className="rounded-[24px] bg-slate-50 p-4 text-sm text-slate-600">
+                      <strong className="text-slate-900">Rubric:</strong> {assignment.rubric}
+                    </div>
+                  </div>
+
+                  <div className="w-full max-w-md">
+                    {existing ? (
+                      <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+                        Latest submission: version {existing.version} · AI score {existing.aiScore}/100 · similarity {existing.plagiarismScore}%
+                      </div>
+                    ) : null}
+                    <SubmissionForm assignmentId={assignment.id} />
+                  </div>
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
-
-      {success && (
-        <div className="bg-green-500 text-white p-3 rounded mb-4">
-          {success}
-        </div>
-      )}
-
-      {assignments.map((a) => (
-        <div key={a.id} className="border rounded p-4 mb-6 shadow-sm grid gap-6">
-          <h2 className="font-semibold text-lg">{a.title}</h2>
-          <p className="mb-3 text-gray-600">{a.description}</p>
-
-          <input
-            type="file"
-            accept="application/pdf"
-            className="block mb-3"
-            onChange={(e) =>
-              setFileMap((prev) => ({
-                ...prev,
-                [a.id]: e.target.files?.[0] || null,
-              }))
-            }
-          />
-
-          <button
-            onClick={() => handleSubmit(a.id)}
-            disabled={loadingId === a.id}
-            className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
-          >
-            {loadingId === a.id ? "Uploading..." : "Submit PDF"}
-          </button>
-        </div>
-      ))}
     </div>
   );
 }
